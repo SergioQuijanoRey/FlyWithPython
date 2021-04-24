@@ -41,29 +41,6 @@ class BasicSpaceShip:
         """Runs the actions needed in order to fly"""
         raise Exception("Not implemented")
 
-class OrbitalDirections:
-    """Orbital directios, given by the autopilot"""
-    def __init__(self, autopilot):
-        self.autopilot = autopilot
-
-    def prograde(self):
-        return (0, 1, 0)
-
-    def retrograde(self):
-        return (0, -1, 0)
-
-    def normal(self):
-        return (0, 0, 1)
-
-    def antinormal(self):
-        return (0, 0, -1)
-
-    def radialin(self):
-        return (1, 0, 0)
-
-    def radialout(self):
-        return (-1, 0, 0)
-
 class OrbitalSpaceship(BasicSpaceShip):
     def __init__(self):
         # BasicSpaceShip init function
