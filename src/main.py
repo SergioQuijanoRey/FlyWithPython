@@ -1,6 +1,8 @@
 import krpc
-import time
+
+import numpy as np
 import math
+import time
 
 class BasicSpaceShip:
     """
@@ -23,11 +25,19 @@ class BasicSpaceShip:
         ===========
         name: name of the connection
         """
-        self.connection = krpc.connect(name = name)
+        try:
+            self.connection = krpc.connect(name = name)
+            print("Connection stablished")
+        except Exception as e:
+            print("[Err] Could not stablish connection")
+            print(f"Errcode was: {e}")
 
     def get_active_vessel(self):
         """Returns the active vessel"""
         return self.connection.space_center.active_vessel
+
+    def get_space_center(self):
+        return self.connection.space_center
 
     def get_autopilot(self):
         """
@@ -39,142 +49,86 @@ class BasicSpaceShip:
 
     def run(self):
         """Runs the actions needed in order to fly"""
-        raise Exception("Not implemented")
+        raise NotImplementedError
 
-class OrbitalSpaceship(BasicSpaceShip):
+    def set_sas(self, sas_activated: bool):
+        self.get_active_vessel().sas = sas_activated
+
+    def set_throttle(self, throttle: float):
+        self.get_active_vessel().control.throttle = throttle
+
+    def get_velocity(self, ref_frame):
+        return self.get_active_vessel().velocity(ref_frame)
+
+    def get_vessel_flight(self):
+        return self.get_active_vessel().flight(self.get_active_vessel().orbit.body.reference_frame)
+
+    def get_vessel_orbit(self):
+        return self.get_active_vessel().orbit
+
+
+class LegolasVI(BasicSpaceShip):
+    """Control LegolasVI spasceship. Working on hitting the moon"""
     def __init__(self):
         # BasicSpaceShip init function
-        super(OrbitalSpaceship, self).__init__(name = "Main Connection")
+        super(LegolasVI, self).__init__(name = "Main Connection")
+
+        # Displaying some info
 
     def run(self):
+        # Getting some constants
+        kerbin = self.get_space_center().bodies.get('Kerbin')
+        atmosphere_altitude = kerbin.atmosphere_depth
+        print(f"Ascending through {atmosphere_altitude} altitude")
+
         vessel = self.get_active_vessel()
 
-        # TODO -- dirty code
-        conn = self.connection
-        turn_start_altitude = 250
-        turn_end_altitude = 45000
-        target_altitude = 150000
+        # Getting ready for launch
+        self.set_sas(True)
+        self.set_throttle(1.0)
 
-        conn = krpc.connect(name='Launch into orbit')
-        vessel = conn.space_center.active_vessel
-
-# Set up streams for telemetry
-        ut = conn.add_stream(getattr, conn.space_center, 'ut')
-        altitude = conn.add_stream(getattr, vessel.flight(), 'mean_altitude')
-        apoapsis = conn.add_stream(getattr, vessel.orbit, 'apoapsis_altitude')
-        stage_2_resources = vessel.resources_in_decouple_stage(stage=2, cumulative=False)
-        srb_fuel = conn.add_stream(stage_2_resources.amount, 'SolidFuel')
-
-# Pre-launch setup
-        vessel.control.sas = False
-        vessel.control.rcs = False
-        vessel.control.throttle = 1.0
-
-# Countdown...
-        print('3...')
-        time.sleep(1)
-        print('2...')
-        time.sleep(1)
-        print('1...')
-        time.sleep(1)
-        print('Launch!')
-
-# Activate the first stage
+        # Vertical ascend
         vessel.control.activate_next_stage()
         vessel.auto_pilot.engage()
         vessel.auto_pilot.target_pitch_and_heading(90, 90)
 
-# Main ascent loop
-        srbs_separated = False
-        turn_angle = 0
-        while True:
+        vel = None
+        while vel is None or np.linalg.norm(vel) < 100:
+            vel = self.get_velocity(kerbin.reference_frame)
+            time.sleep(0.05)
 
-            # Gravity turn
-            if altitude() > turn_start_altitude and altitude() < turn_end_altitude:
-                frac = ((altitude() - turn_start_altitude) /
-                        (turn_end_altitude - turn_start_altitude))
-                new_turn_angle = frac * 90
-                if abs(new_turn_angle - turn_angle) > 0.5:
-                    turn_angle = new_turn_angle
-                    vessel.auto_pilot.target_pitch_and_heading(90-turn_angle, 90)
+        print("Starting to rotate")
+        self.get_autopilot().target_pitch_and_heading(80, 90)
+        apoapsis_altitude = None
+        while apoapsis_altitude is None or apoapsis_altitude < atmosphere_altitude + 1500:
+            apoapsis_altitude = self.get_vessel_orbit().apoapsis
+            # TODO -- weird apoapis value
+            # TODO -- BUG
+            print(f"apoapsis: {apoapsis_altitude}")
+            time.sleep(0.05)
 
-            # Separate SRBs when finished
-            if not srbs_separated:
-                if srb_fuel() < 0.1:
-                    vessel.control.activate_next_stage()
-                    srbs_separated = True
-                    print('SRBs separated')
+        print("Slowing until reaching out of thick air")
+        self.set_throttle(0.0)
+        altitude = None
+        while altitude is None or altitude < atmosphere_altitude:
+            altitude = self.get_vessel_flight().mean_altitude
+            time.sleep(0.05)
 
-            # Decrease throttle when approaching target apoapsis
-            if apoapsis() > target_altitude*0.9:
-                print('Approaching target apoapsis')
-                break
-            # Disable engines when target apoapsis is reached
-        vessel.control.throttle = 0.25
-        while apoapsis() < target_altitude:
-            pass
-        print('Target apoapsis reached')
-        vessel.control.throttle = 0.0
+        print("Starting to get in orbit")
+        self.set_throttle(1.0)
+        self.get_autopilot().target_direction(0, 1, 0)
+        periapsis = None
+        while periapsis is None or periapsis < atmosphere_altitude:
+            periapsis = self.get_vessel_orbit().periapsis
+            time.sleep(0.05)
 
-# Wait until out of atmosphere
-        print('Coasting out of atmosphere')
-        while altitude() < 70500:
-            pass
-
-# Plan circularization burn (using vis-viva equation)
-        print('Planning circularization burn')
-        mu = vessel.orbit.body.gravitational_parameter
-        r = vessel.orbit.apoapsis
-        a1 = vessel.orbit.semi_major_axis
-        a2 = r
-        v1 = math.sqrt(mu*((2./r)-(1./a1)))
-        v2 = math.sqrt(mu*((2./r)-(1./a2)))
-        delta_v = v2 - v1
-        node = vessel.control.add_node(
-            ut() + vessel.orbit.time_to_apoapsis, prograde=delta_v)
-
-# Calculate burn time (using rocket equation)
-        F = vessel.available_thrust
-        Isp = vessel.specific_impulse * 9.82
-        m0 = vessel.mass
-        m1 = m0 / math.exp(delta_v/Isp)
-        flow_rate = F / Isp
-        burn_time = (m0 - m1) / flow_rate
-
-        # Orientate ship
-        print('Orientating ship for circularization burn')
-        vessel.auto_pilot.reference_frame = node.reference_frame
-        vessel.auto_pilot.target_direction = (0, 1, 0)
-        vessel.auto_pilot.wait()
-
-# Wait until burn
-        print('Waiting until circularization burn')
-        burn_ut = ut() + vessel.orbit.time_to_apoapsis - (burn_time/2.)
-# Execute burn
-        print('Ready to execute burn')
-        time_to_apoapsis = conn.add_stream(getattr, vessel.orbit, 'time_to_apoapsis')
-        while time_to_apoapsis() - (burn_time/2.) > 0:
-            pass
-        print('Executing burn')
-        vessel.control.throttle = 1.0
-        time.sleep(burn_time - 0.1)
-        print('Fine tuning')
-        vessel.control.throttle = 0.05
-        remaining_burn = conn.add_stream(node.remaining_burn_vector, node.reference_frame)
-        while remaining_burn()[1] > 0:
-            pass
-        vessel.control.throttle = 0.0
-        node.remove()
-
-        print('Launch complete')
-        lead_time = 5
-        conn.space_center.warp_to(burn_ut - lead_time)
-
+        print("We are done")
+        self.set_throttle(0.0)
 
 
 
 
 if __name__== "__main__":
-    spaceship = OrbitalSpaceship()
+    spaceship = LegolasVI()
     spaceship.run()
     print("==> End of script controller")
